@@ -4,6 +4,7 @@ from functools import lru_cache
 from itertools import combinations_with_replacement
 
 import numpy as np
+import scipy.linalg
 from scipy.spatial.distance import cdist
 from scipy.spatial import cKDTree
 from scipy.special import xlogy, binom
@@ -140,6 +141,122 @@ _NAME_TO_FUNC = {
 
 # The shape parameter does not need to be specified when using these kernels
 _SCALE_INVARIANT = {'linear', 'tps', 'cubic', 'quintic'}
+
+
+def _gcv(d, s, K, P):
+    """
+    Generalized Cross Validation (GCV) score for RBF interpolation. The
+    implementation follows eq. 1.3.23 and 4.3.1 of [1].
+
+    Parameters
+    ----------
+    d : (N, D) ndarray
+        Data values. The data are vector-valued for generality. The returned
+        GCV score is the average of GCV scores for each component.
+    s : (N,) ndarray
+        Smoothing parameter for each data point
+    K : (N, N) ndarray
+        RBF matrix with smoothing parameters added to diagonals
+    P : (N, M) ndarray
+        Polynomial matrix
+
+    Returns
+    -------
+    float
+
+    References
+    ----------
+    .. [1] Wahba, G., 1990. Spline Models for Observational Data. SIAM.
+
+    """
+    n, m = P.shape
+    if n == m:
+        # if n == m then the interpolant will perfectly fit the data regardless
+        # of the smoothing parameter, and the GCV score should evaluate to NaN.
+        # Return NaN here because otherwise cho_solve and solve_triangular will
+        # receive 0 sized input, which results in an error
+        return np.nan
+
+    Q, _ = np.linalg.qr(P, mode='complete')
+    Q2 = Q[:, m:]
+    K_proj = Q2.T.dot(K).dot(Q2)
+    d_proj = Q2.T.dot(d)
+    try:
+        L, _ = scipy.linalg.cho_factor(K_proj, lower=True)
+    except np.linalg.LinAlgError:
+        # This error occurs when `K` is not numerically conditionally positive
+        # definite, which is indicative of an ill-posed problem. We could try
+        # to compute the GCV without using a Cholesky decomposition, but it is
+        # not clear if that would produce results that are any more useful.
+        return np.nan
+
+    res = s[:, None]*(Q2.dot(scipy.linalg.cho_solve((L, True), d_proj)))
+    # `mse` is the mean squared error between `d` and the interpolant. This is
+    # in the numerator for the GCV expression in eq. 4.3.1
+    mse = np.mean(np.linalg.norm(res, axis=0)**2/n)
+
+    H = scipy.linalg.solve_triangular(L, Q2.T, lower=True)
+    # `trc` is 1/n times the trace of the matrix mapping `d` to the residual
+    # vector. This is in the denominator for the GCV expression in eq. 4.3.1.
+    # This will be zero whenever the smoothing parameter is 0 (or n == m),
+    # which will result in a NaN
+    trc = np.mean(s*np.sum(H**2, axis=0))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = mse / trc**2
+
+    return out
+
+
+def _gml(d, K, P):
+    """
+    Generalized Maximum Likelihood (GML) score for RBF interpolation. The
+    implementation follows section 4.8 of [1]
+
+    Parameters
+    ----------
+    d : (N, D) ndarray
+        Data values. The data are vector-valued for generality. The returned
+        GML score is the sum of GML scores for each component.
+    K : (N, N) ndarray
+        RBF matrix with smoothing added to diagonals
+    P : (N, M) ndarray
+        Polynomial matrix
+
+    Returns
+    -------
+    float
+
+    References
+    ----------
+    .. [1] Wahba, G., 1990. Spline Models for Observational Data. SIAM.
+
+    """
+    n, m = P.shape
+    if n == m:
+        # if n == m, the GML score will always be 0. Return 0 here because
+        # otherwise solve_triangular will receive a 0 sized input and return an
+        # error
+        return 0.0
+
+    Q, _ = np.linalg.qr(P, mode='complete')
+    Q2 = Q[:, m:]
+    K_proj = Q2.T.dot(K).dot(Q2)
+    d_proj = Q2.T.dot(d)
+    try:
+        L, _ = scipy.linalg.cho_factor(K_proj, lower=True)
+    except np.linalg.LinAlgError:
+        return np.nan
+
+    # compute and sum the Mahalanobis distance for each component of `d_proj`
+    # using `K_proj` as the covariance matrix. This is in the numerator of the
+    # GML expression.
+    weighted_d_proj = scipy.linalg.solve_triangular(L, d_proj, lower=True)
+    dist = np.linalg.norm(weighted_d_proj)**2
+    # compute the determinant of `K_proj` using the diagonals of its Cholesky
+    # decomposition. This is in the denominator of the GML expression.
+    logdet = 2*np.sum(np.log(np.diag(L)))
+    out = dist*np.exp(logdet/(n - m))
+    return out
 
 
 def _sanitize_init_args(y, d, smoothing, kernel, epsilon, degree, k):
@@ -359,6 +476,93 @@ class RBFInterpolator:
     .. [4] http://pages.stat.wisc.edu/~wahba/stat860public/lect/lect8/lect8.pdf
 
     """
+    @staticmethod
+    def gcv(y, d,
+            smoothing=0.0,
+            kernel='tps',
+            epsilon=None,
+            degree=None):
+        """
+        Returns the Generalized Cross Validation (GCV) score for an
+        `RBFInterpolator` instance created with the same arguments. The
+        smoothing parameter, shape parameter, and/or kernel can be selected to
+        minimize the GCV score, as suggested in [1].
+
+        See `__init__` for a description of the arguments.
+
+        The smoothing parameter must be non-zero in order for the GCV score to
+        not be NaN.
+
+        See Chapter 4 of [1] for more information on GCV.
+
+        Returns
+        -------
+        float
+
+        References
+        ----------
+        .. [1] Wahba, G., 1990. Spline Models for Observational Data. SIAM.
+
+        """
+        y, d, smoothing, kernel, epsilon, degree, _ = _sanitize_init_args(
+            y, d, smoothing, kernel, epsilon, degree, None
+            )
+
+        ny = y.shape[0]
+        d = d.reshape((ny, -1))
+
+        yeps = y*epsilon
+        Kyy = kernel(_distance(yeps, yeps))
+        Kyy[range(ny), range(ny)] += smoothing
+
+        center = y.mean(axis=0)
+        scale = y.ptp(axis=0).max() if (ny > 1) else 1.0
+        yhat = (y - center)/scale
+        Py = _vandermonde(yhat, degree)
+
+        return _gcv(d, smoothing, Kyy, Py)
+
+    @staticmethod
+    def gml(y, d,
+            smoothing=0.0,
+            kernel='tps',
+            epsilon=None,
+            degree=None):
+        """
+        Returns the Generalized Maximum Likelihood (GML) score for an
+        `RBFInterpolator` instance created with the same arguments.
+
+        See `__init__` for a description of the arguments.
+
+        See Chapter 4 of [1] for more information on GML.
+
+        Returns
+        -------
+        float
+
+        References
+        ----------
+        .. [1] Wahba, G., 1990. Spline Models for Observational Data. SIAM.
+
+        """
+        y, d, smoothing, kernel, epsilon, degree, _ = _sanitize_init_args(
+            y, d, smoothing, kernel, epsilon, degree, None
+            )
+
+        ny = y.shape[0]
+        d = d.reshape((ny, -1))
+
+        yeps = y*epsilon
+        Kyy = kernel(_distance(yeps, yeps))
+        Kyy[range(ny), range(ny)] += smoothing
+
+        center = y.mean(axis=0)
+        scale = y.ptp(axis=0).max() if (ny > 1) else 1.0
+        yhat = (y - center)/scale
+        Py = _vandermonde(yhat, degree)
+
+        return _gml(d, Kyy, Py)
+
     def __init__(self, y, d,
                  smoothing=0.0,
                  kernel='tps',
@@ -381,11 +585,7 @@ class RBFInterpolator:
         # Create the matrix of monomials evaluated at y. Normalize the domain
         # to be within [-1, 1]
         center = y.mean(axis=0)
-        if ny > 1:
-            scale = y.ptp(axis=0).max()
-        else:
-            scale = 1.0
-
+        scale = y.ptp(axis=0).max() if (ny > 1) else 1.0
         yhat = (y - center)/scale
         Py = _vandermonde(yhat, degree)
 
