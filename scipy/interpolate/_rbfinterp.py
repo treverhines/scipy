@@ -6,9 +6,8 @@ from itertools import combinations_with_replacement
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.special import binom
-from scipy.linalg.lapack import get_lapack_funcs
 
-from ._rbfinterp_pythran import _build_system, _evaluate
+from ._rbfinterp_cython import _RBFInterpolator
 
 
 __all__ = ['RBFInterpolator', 'KNearestRBFInterpolator']
@@ -274,23 +273,17 @@ class RBFInterpolator:
 
         ny, ndim = y.shape
         data_shape = d.shape[1:]
-        d = d.reshape((ny, -1))
+        data_type = d.dtype
+        d = d.reshape((ny, -1)).view(float)
         powers = _monomial_powers(ndim, degree)
-        lhs, rhs, shift, scale = _build_system(
-            y, d, smoothing, kernel, epsilon, powers
-            )
 
-        solve_func = get_lapack_funcs('gesv', dtype=d.dtype)
-        coeffs = solve_func(lhs, rhs)[2]
+        itp = _RBFInterpolator(y, d, smoothing, kernel, epsilon, powers)
 
-        self.y = y
-        self.kernel = kernel
-        self.epsilon = epsilon
-        self.powers = powers
-        self.shift = shift
-        self.scale = scale
-        self.coeffs = coeffs
+        self.itp = itp
+        self.ny = ny
+        self.ndim = ndim
         self.data_shape = data_shape
+        self.data_type = data_type
 
     def __call__(self, x):
         """
@@ -312,17 +305,13 @@ class RBFInterpolator:
             raise ValueError('Expected `x` to be a 2-dimensional array')
 
         nx, ndim = x.shape
-        if ndim != self.y.shape[1]:
+        if ndim != self.ndim:
             raise ValueError(
-                'Expected the second axis of `x` to have length %d' %
-                self.y.shape[1]
+                'Expected the second axis of `x` to have length %d' % self.ndim
                 )
 
-        out = _evaluate(
-            x, self.y, self.kernel, self.epsilon, self.powers, self.shift,
-            self.scale, self.coeffs
-            )
-        out = out.reshape((nx,) + self.data_shape)
+        out = self.itp(x)
+        out = out.view(self.data_type).reshape((nx,) + self.data_shape)
         return out
 
 
@@ -390,7 +379,8 @@ class KNearestRBFInterpolator:
 
         ny, ndim = y.shape
         data_shape = d.shape[1:]
-        d = d.reshape((ny, -1))
+        data_type = d.dtype
+        d = d.reshape((ny, -1)).view(float)
         powers = _monomial_powers(ndim, degree)
         tree = KDTree(y)
 
@@ -403,6 +393,7 @@ class KNearestRBFInterpolator:
         self.powers = powers
         self.tree = tree
         self.data_shape = data_shape
+        self.data_type = data_type
 
     def __call__(self, x):
         """
@@ -430,7 +421,7 @@ class KNearestRBFInterpolator:
                 self.y.shape[1]
                 )
 
-        out = np.zeros((nx,) + self.data_shape, dtype=self.d.dtype)
+        out = np.zeros((nx,) + self.data_shape, dtype=self.data_type)
 
         # get the indices of the k nearest observation points to each
         # interpolation point
@@ -451,7 +442,6 @@ class KNearestRBFInterpolator:
         for i, j in enumerate(inv):
             xindices[j].append(i)
 
-        solve_func = get_lapack_funcs('gesv', dtype=self.d.dtype)
         for xidx, yidx in zip(xindices, yindices):
             # `yidx` are the indices of the observations in this neighborhood.
             # `xidx` are the indices of the interpolation points that are using
@@ -460,15 +450,9 @@ class KNearestRBFInterpolator:
             ynbr = self.y[yidx]
             dnbr = self.d[yidx]
             snbr = self.smoothing[yidx]
-            lhs, rhs, shift, scale = _build_system(
-                ynbr, dnbr, snbr, self.kernel, self.epsilon, self.powers,
+            itp = _RBFInterpolator(
+                ynbr, dnbr, snbr, self.kernel, self.epsilon, self.powers
                 )
-
-            coeffs = solve_func(lhs, rhs)[2]
-
-            out[xidx] = _evaluate(
-                xnbr, ynbr, self.kernel, self.epsilon, self.powers, shift,
-                scale, coeffs
-                ).reshape((-1,) + self.data_shape)
+            out[xidx] = itp(xnbr).view(self.data_type).reshape((-1,) + self.data_shape)
 
         return out
