@@ -57,7 +57,7 @@ cdef double _ga(double r):
 # define a type for the RBF kernel functions, which take and return doubles
 ctypedef double (*kernel_func_type)(double)
 
-    
+
 cdef kernel_func_type _kernel_name_to_func(unicode kernel) except *:
     '''returns the kernel function corresponding to the string'''
     if kernel == 'linear':
@@ -110,7 +110,7 @@ cdef void _kernel_matrix(double[:, ::1] x,
 cdef void _polynomial_matrix(double[:, ::1] x,
                              long[:, ::1] powers,
                              double[::1] shift,
-                             double scale,
+                             double[::1] scale,
                              double[:, :] out):
     cdef:
         int i, j, k
@@ -123,7 +123,7 @@ cdef void _polynomial_matrix(double[:, ::1] x,
         for j in range(p):
             value = 1.0
             for k in range(n):
-                value *= ((x[i, k] - shift[k])/scale)**powers[j, k]
+                value *= ((x[i, k] - shift[k])/scale[k])**powers[j, k]
 
             out[i, j] = value
 
@@ -157,7 +157,7 @@ cdef void _kernel_vector(double[::1] x,
 cdef void _polynomial_vector(double[::1] x,
                              long[:, ::1] powers,
                              double[::1] shift,
-                             double scale,
+                             double[::1] scale,
                              double[::1] out):
     cdef:
         int i, j
@@ -168,54 +168,29 @@ cdef void _polynomial_vector(double[::1] x,
     for i in range(m):
         value = 1.0
         for j in range(n):
-            value *= ((x[j] - shift[j])/scale)**powers[i, j]
+            value *= ((x[j] - shift[j])/scale[j])**powers[i, j]
 
         out[i] = value
 
 
-@cdivision(True)
 @boundscheck(False)
 @wraparound(False)
-cdef double[::1] _shift(double[:, ::1] x):
+cdef double[:, ::1] _shift_and_scale(double[:, ::1] x):
     '''
-    Returns a vector to shift `x` by to improve numerical stability. This is
-    equivalent to `np.mean(x, axis=0)`
-    '''
-    cdef:
-        int i, j
-        int m = x.shape[0]
-        int n = x.shape[1]
-        double value
-        double[::1] out = array(
-            shape=(n,),
-            itemsize=sizeof(double),
-            format='d'
-            )
-
-    for j in range(n):
-        value = 0.0
-        for i in range(m):
-            value += x[i, j]
-
-        value /= m
-        out[j] = value
-
-    return out
-
-
-@boundscheck(False)
-@wraparound(False)
-cdef double _scale(double[:, ::1] x):
-    '''
-    Returns a value to scale `x` by to improve numerical stability. In most
-    cases, this is equivalent to `np.ptp(x, axis=0).max()`
+    Returns values to shift and scale x by so that it spans a unit hypercube
     '''
     cdef:
         int i, j
         int m = x.shape[0]
         int n = x.shape[1]
         double min_value, max_value
-        double out = 0.0
+        # store the shift in the first row of the output array and the scale in
+        # the second row
+        double[:, ::1] out = array(
+            shape=(2, n),
+            itemsize=sizeof(double),
+            format='d'
+            )
 
     for j in range(n):
         # assuming x has been sanitized and x.shape[0] != 0
@@ -225,14 +200,16 @@ cdef double _scale(double[:, ::1] x):
             min_value = fmin(x[i, j], min_value)
             max_value = fmax(x[i, j], max_value)
 
-        out = fmax(max_value - min_value, out)
+        out[0, j] = (max_value + min_value)/2
+        if min_value == max_value:
+            # if there is a single point in x or all the points in x have the
+            # same value for dimension j, then scale dimension j by one rather
+            # than dividing by zero.
+            out[1, j] = 1.0
+        else:
+            out[1, j] = (max_value - min_value)/2
 
-    # If there is a single point in `x` or all the points are equal, then `out`
-    # will be 0. In that case, return 1 to avoid division by 0
-    if out == 0.0:
-        return 1.0
-    else:
-        return out
+    return out
 
 
 @boundscheck(False)
@@ -295,8 +272,9 @@ def _build_and_solve(double[:, ::1] y,
         int i
         int ny = y.shape[0]
         int nmonos = powers.shape[0]
-        double[::1] shift = _shift(y)
-        double scale = _scale(y)
+        double[:, ::1] shift_and_scale = _shift_and_scale(y)
+        double[::1] shift = shift_and_scale[0]
+        double[::1] scale = shift_and_scale[1]
         double[::1, :] lhs = array(
             shape=(ny + nmonos, ny + nmonos),
             itemsize=sizeof(double),
@@ -309,7 +287,7 @@ def _build_and_solve(double[:, ::1] y,
             format='d',
             mode='fortran'
             )
-        
+
     _kernel_matrix(y, kernel_func, epsilon, lhs[:ny, :ny])
     _polynomial_matrix(y, powers, shift, scale, lhs[:ny, ny:])
     lhs[ny:, :ny] = lhs[:ny, ny:].T
@@ -323,8 +301,8 @@ def _build_and_solve(double[:, ::1] y,
     # solve as a generic system, the solution is written to rhs
     _dgesv(lhs, rhs)
 
-    return np.asarray(rhs), np.asarray(shift), scale
-    
+    return np.asarray(rhs), np.asarray(shift), np.asarray(scale)
+
 
 @boundscheck(False)
 @wraparound(False)
@@ -335,7 +313,7 @@ def _evaluate(double[:, ::1] x,
               long[:, ::1] powers,
               double[::1, :] coeffs,
               double[::1] shift,
-              double scale):
+              double[::1] scale):
     cdef:
         kernel_func_type kernel_func = _kernel_name_to_func(kernel)
         int i
