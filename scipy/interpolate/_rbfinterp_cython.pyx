@@ -1,6 +1,7 @@
 # cython: language_level=3
 import numpy as np
 
+cimport numpy as cnp
 from cython.view cimport array
 from cython cimport boundscheck, wraparound, cdivision
 from scipy.linalg.cython_lapack cimport dgesv
@@ -56,7 +57,7 @@ cdef double _ga(double r):
 # define a type for the RBF kernel functions, which take and return doubles
 ctypedef double (*kernel_func_type)(double)
 
-
+    
 cdef kernel_func_type _kernel_name_to_func(unicode kernel) except *:
     '''returns the kernel function corresponding to the string'''
     if kernel == 'linear':
@@ -83,6 +84,7 @@ cdef kernel_func_type _kernel_name_to_func(unicode kernel) except *:
 @wraparound(False)
 cdef void _kernel_matrix(double[:, ::1] x,
                          kernel_func_type kernel_func,
+                         double epsilon,
                          double[:, :] out):
     cdef:
         int i, j, k
@@ -97,15 +99,18 @@ cdef void _kernel_matrix(double[:, ::1] x,
                 value += (x[i, k] - x[j, k])**2
 
             value = sqrt(value)
-            value = kernel_func(value)
+            value = kernel_func(value*epsilon)
             out[i, j] = value
             out[j, i] = value
 
 
+@cdivision(True)
 @boundscheck(False)
 @wraparound(False)
 cdef void _polynomial_matrix(double[:, ::1] x,
                              long[:, ::1] powers,
+                             double[::1] shift,
+                             double scale,
                              double[:, :] out):
     cdef:
         int i, j, k
@@ -118,7 +123,7 @@ cdef void _polynomial_matrix(double[:, ::1] x,
         for j in range(p):
             value = 1.0
             for k in range(n):
-                value *= x[i, k]**powers[j, k]
+                value *= ((x[i, k] - shift[k])/scale)**powers[j, k]
 
             out[i, j] = value
 
@@ -128,6 +133,7 @@ cdef void _polynomial_matrix(double[:, ::1] x,
 cdef void _kernel_vector(double[::1] x,
                          double[:, ::1] y,
                          kernel_func_type kernel_func,
+                         double epsilon,
                          double[::1] out):
     cdef:
         int i, j
@@ -141,14 +147,17 @@ cdef void _kernel_vector(double[::1] x,
             value += (x[j] - y[i, j])**2
 
         value = sqrt(value)
-        value = kernel_func(value)
+        value = kernel_func(value*epsilon)
         out[i] = value
 
 
+@cdivision(True)
 @boundscheck(False)
 @wraparound(False)
 cdef void _polynomial_vector(double[::1] x,
                              long[:, ::1] powers,
+                             double[::1] shift,
+                             double scale,
                              double[::1] out):
     cdef:
         int i, j
@@ -159,7 +168,7 @@ cdef void _polynomial_vector(double[::1] x,
     for i in range(m):
         value = 1.0
         for j in range(n):
-            value *= x[j]**powers[i, j]
+            value *= ((x[j] - shift[j])/scale)**powers[i, j]
 
         out[i] = value
 
@@ -273,125 +282,80 @@ cdef void _dgemv(char trans,
         )
 
 
-cdef class _RBFInterpolator:
+@boundscheck(False)
+@wraparound(False)
+def _build_and_solve(double[:, ::1] y,
+                     double[:, ::1] d,
+                     double[::1] smoothing,
+                     unicode kernel,
+                     double epsilon,
+                     long[:, ::1] powers):
     cdef:
-        double[:, ::1] yeps
-        double epsilon
-        double[::1] shift
-        double scale
-        long[:, ::1] powers
-        double[::1, :] coeffs
-        int ny, ndim, ddim, nmonos
-        unicode kernel
+        kernel_func_type kernel_func = _kernel_name_to_func(kernel)
+        int i
+        int ny = y.shape[0]
+        int nmonos = powers.shape[0]
+        double[::1] shift = _shift(y)
+        double scale = _scale(y)
+        double[::1, :] lhs = array(
+            shape=(ny + nmonos, ny + nmonos),
+            itemsize=sizeof(double),
+            format='d',
+            mode='fortran'
+            )
+        double[::1, :] rhs = array(
+            shape=(ny + nmonos, d.shape[1]),
+            itemsize=sizeof(double),
+            format='d',
+            mode='fortran'
+            )
+        
+    _kernel_matrix(y, kernel_func, epsilon, lhs[:ny, :ny])
+    _polynomial_matrix(y, powers, shift, scale, lhs[:ny, ny:])
+    lhs[ny:, :ny] = lhs[:ny, ny:].T
+    lhs[ny:, ny:] = 0.0
+    for i in range(ny):
+        lhs[i, i] += smoothing[i]
 
-    @cdivision(True)
-    @boundscheck(False)
-    @wraparound(False)
-    def __init__(self,
-                 double[:, ::1] y,
-                 double[:, ::1] d,
-                 double[::1] smoothing,
-                 unicode kernel,
-                 double epsilon,
-                 long[:, ::1] powers):
-        cdef:
-            kernel_func_type kernel_func = _kernel_name_to_func(kernel)
-            int i, j
-            int ny = y.shape[0]
-            int ndim = y.shape[1]
-            int ddim = d.shape[1]
-            int nmonos = powers.shape[0]
-            double[::1] shift = _shift(y)
-            double scale = _scale(y)
-            double[:, ::1] yeps = array(
-                shape=(ny, ndim),
-                itemsize=sizeof(double),
-                format='d',
-                )
-            double[:, ::1] yhat = array(
-                shape=(ny, ndim),
-                itemsize=sizeof(double),
-                format='d',
-                )
-            double[::1, :] lhs = array(
-                shape=(ny + nmonos, ny + nmonos),
-                itemsize=sizeof(double),
-                format='d',
-                mode='fortran'
-                )
-            double[::1, :] rhs = array(
-                shape=(ny + nmonos, ddim),
-                itemsize=sizeof(double),
-                format='d',
-                mode='fortran'
-                )
+    rhs[:ny] = d
+    rhs[ny:] = 0.0
 
-        for i in range(ny):
-            for j in range(ndim):
-                yeps[i, j] = y[i, j]*epsilon
-                yhat[i, j] = (y[i, j] - shift[j])/scale
+    # solve as a generic system, the solution is written to rhs
+    _dgesv(lhs, rhs)
 
-        _kernel_matrix(yeps, kernel_func, lhs[:ny, :ny])
-        _polynomial_matrix(yhat, powers, lhs[:ny, ny:])
-        lhs[ny:, :ny] = lhs[:ny, ny:].T
-        lhs[ny:, ny:] = 0.0
-        for i in range(ny):
-            lhs[i, i] += smoothing[i]
+    return np.asarray(rhs), np.asarray(shift), scale
+    
 
-        rhs[:ny] = d
-        rhs[ny:] = 0.0
+@boundscheck(False)
+@wraparound(False)
+def _evaluate(double[:, ::1] x,
+              double[:, ::1] y,
+              unicode kernel,
+              double epsilon,
+              long[:, ::1] powers,
+              double[::1, :] coeffs,
+              double[::1] shift,
+              double scale):
+    cdef:
+        kernel_func_type kernel_func = _kernel_name_to_func(kernel)
+        int i
+        int nx = x.shape[0]
+        int ny = y.shape[0]
+        int nmonos = powers.shape[0]
+        double[:, ::1] out = array(
+            shape=(nx, coeffs.shape[1]),
+            itemsize=sizeof(double),
+            format='d',
+            )
+        double[::1] vec = array(
+            shape=(ny + nmonos,),
+            itemsize=sizeof(double),
+            format='d',
+            )
 
-        # solve as a generic system, the solution is written to rhs
-        _dgesv(lhs, rhs)
+    for i in range(nx):
+        _kernel_vector(x[i], y, kernel_func, epsilon, vec[:ny])
+        _polynomial_vector(x[i], powers, shift, scale, vec[ny:])
+        _dgemv(b'T', coeffs, vec, out[i])
 
-        self.yeps = yeps
-        self.epsilon = epsilon
-        self.shift = shift
-        self.scale = scale
-        self.powers = powers
-        self.coeffs = rhs
-        self.ny = ny
-        self.ndim = ndim
-        self.ddim = ddim
-        self.nmonos = nmonos
-        self.kernel = kernel
-
-    @cdivision(True)
-    @boundscheck(False)
-    @wraparound(False)
-    def __call__(self, double[:, ::1] x):
-        cdef:
-            kernel_func_type kernel_func = _kernel_name_to_func(self.kernel)
-            int i, j
-            int nx = x.shape[0]
-            double[:, ::1] out = array(
-                shape=(nx, self.ddim),
-                itemsize=sizeof(double),
-                format='d',
-                )
-            double[::1] xeps = array(
-                shape=(self.ndim,),
-                itemsize=sizeof(double),
-                format='d'
-                )
-            double[::1] xhat = array(
-                shape=(self.ndim,),
-                itemsize=sizeof(double),
-                format='d'
-                )
-            double[::1] vec = array(
-                shape=(self.ny + self.nmonos,),
-                itemsize=sizeof(double),
-                format='d',
-                )
-
-        for i in range(nx):
-            for j in range(self.ndim):
-                xeps[j] = x[i, j]*self.epsilon
-                xhat[j] = (x[i, j] - self.shift[j])/self.scale
-
-            _kernel_vector(xeps, self.yeps, kernel_func, vec[:self.ny])
-            _polynomial_vector(xhat, self.powers, vec[self.ny:])
-            _dgemv(b'T', self.coeffs, vec, out[i])
-
-        return np.array(out)
+    return np.asarray(out)
