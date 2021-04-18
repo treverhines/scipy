@@ -1,8 +1,10 @@
 # cython: language_level=3
 import numpy as np
+from numpy.linalg import LinAlgError
+from scipy.linalg.lapack import dgesv as py_dgesv
 
 cimport numpy as cnp
-from cython.view cimport array
+from cython.view cimport array, contiguous
 from cython cimport boundscheck, wraparound, cdivision
 from scipy.linalg.cython_lapack cimport dgesv
 from scipy.linalg.cython_blas cimport dgemv
@@ -19,39 +21,39 @@ cdef double _tps(double r):
     if r == 0.0:
         return 0.0
     else:
-        return r*r*log(r)
+        return r**2*log(r)
 
 
 cdef double _cubic(double r):
     """Cubic / 3rd order polyharmonic spline"""
-    return r*r*r
+    return r*r*r # faster than r**3
 
 
 cdef double _quintic(double r):
     """Quintic / 5th order polyharmonic spline"""
-    return -r*r*r*r*r
+    return -r*r*r*r*r # faster than r**5
 
 
 cdef double _mq(double r):
     """Multiquadratic"""
-    return -sqrt(r*r + 1)
+    return -sqrt(r**2 + 1)
 
 
 @cdivision(True)
 cdef double _imq(double r):
     """Inverse multiquadratic"""
-    return 1/sqrt(r*r + 1)
+    return 1/sqrt(r**2 + 1)
 
 
 @cdivision(True)
 cdef double _iq(double r):
     """Inverse quadratic"""
-    return 1/(r*r + 1)
+    return 1/(r**2 + 1)
 
 
 cdef double _ga(double r):
     """Gaussian"""
-    return exp(-r*r)
+    return exp(-r**2)
 
 
 # define a type for the RBF kernel functions, which take and return doubles
@@ -229,15 +231,9 @@ cdef void _dgesv(double[::1, :] A, double[::1, :] B) except *:
     dgesv(&n, &nrhs, &A[0, 0], &n, &ipiv[0], &B[0, 0], &n, &info)
     if info != 0:
         if info < 0:
-            raise ValueError(
-                'The %d-th argument had an illegal value.' % abs(info)
-                )
+            raise ValueError('The %d-th argument had an illegal value' % -info)
         else:
-            raise ValueError(
-                'U(%d,%d) is exactly zero. The factorization has been '
-                'completed, but the factor U is exactly singular, so the '
-                'solution could not be computed.' % (info, info)
-                )
+            raise LinAlgError('Singular matrix')
 
 
 @boundscheck(False)
