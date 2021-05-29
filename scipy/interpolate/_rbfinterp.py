@@ -79,7 +79,8 @@ def _monomial_powers(ndim, degree):
     return out
 
 
-def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
+def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
+                            check_cond):
     """Build and solve the RBF interpolation system of equations.
 
     Parameters
@@ -96,6 +97,8 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
         Shape parameter.
     powers : (R, N) int ndarray
         The exponents for each monomial in the polynomial.
+    check_cond : bool
+        Whether to check if the system is ill-conditioned.
 
     Returns
     -------
@@ -111,7 +114,7 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
         y, d, smoothing, kernel, epsilon, powers
         )
 
-    if kernel not in _SCALE_INVARIANT:
+    if (kernel not in _SCALE_INVARIANT) and check_cond:
         lhs_norm = dlange('1', lhs)
 
     lu, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
@@ -132,7 +135,7 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
 
         raise LinAlgError(msg)
 
-    if kernel not in _SCALE_INVARIANT:
+    if (kernel not in _SCALE_INVARIANT) and check_cond:
         # Check the condition number of `lhs` when the RBF is not scale
         # invariant. Use the same warning criteria as `scipy.linalg.solve`. The
         # condition number is not checked when the RBF is scale invariant
@@ -200,6 +203,14 @@ class RBFInterpolator:
 
         The default value is the minimum degree for `kernel` or 0 if there is
         no minimum degree. Set this to -1 for no added polynomial.
+    check_cond : bool, optional
+        Whether to check the condition number of the system used to solve for
+        the RBF interpolation coefficients. A warning is raised if the system
+        is ill-conditioned. The check only occurs when `kernel` is not scale
+        invariant ('multiqaudric', 'inverse_multiquadric', 'inverse_quadratic',
+        or 'gaussian'). Defaults to `True`.
+
+        .. versionadded:: 1.8.0
 
     Notes
     -----
@@ -307,7 +318,8 @@ class RBFInterpolator:
                  smoothing=0.0,
                  kernel="thin_plate_spline",
                  epsilon=None,
-                 degree=None):
+                 degree=None,
+                 check_cond=True):
         y = np.asarray(y, dtype=float, order="C")
         if y.ndim != 2:
             raise ValueError("`y` must be a 2-dimensional array.")
@@ -389,7 +401,7 @@ class RBFInterpolator:
 
         if neighbors is None:
             shift, scale, coeffs = _build_and_solve_system(
-                y, d, smoothing, kernel, epsilon, powers
+                y, d, smoothing, kernel, epsilon, powers, check_cond
                 )
 
             # Make these attributes private since they do not always exist.
@@ -409,6 +421,7 @@ class RBFInterpolator:
         self.kernel = kernel
         self.epsilon = epsilon
         self.powers = powers
+        self.check_cond = check_cond
 
     def __call__(self, x):
         """Evaluate the interpolant at `x`.
@@ -473,6 +486,7 @@ class RBFInterpolator:
                 snbr = self.smoothing[yidx]
                 shift, scale, coeffs = _build_and_solve_system(
                     ynbr, dnbr, snbr, self.kernel, self.epsilon, self.powers,
+                    self.check_cond
                     )
 
                 out[xidx] = _evaluate(
