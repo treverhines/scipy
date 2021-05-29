@@ -4,9 +4,11 @@ from itertools import combinations_with_replacement
 
 import numpy as np
 from numpy.linalg import LinAlgError
+from scipy.linalg.misc import LinAlgWarning
 from scipy.spatial import KDTree
 from scipy.special import comb
-from scipy.linalg.lapack import dgesv  # type: ignore[attr-defined]
+from scipy.linalg.lapack import (dgesv, dlange,  # type: ignore[attr-defined]
+                                 dgecon, dlamch)
 
 from ._rbfinterp_pythran import _build_system, _evaluate, _polynomial_matrix
 
@@ -108,7 +110,11 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
     lhs, rhs, shift, scale = _build_system(
         y, d, smoothing, kernel, epsilon, powers
         )
-    _, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
+
+    if kernel not in _SCALE_INVARIANT:
+        lhs_norm = dlange('1', lhs)
+
+    lu, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
     if info < 0:
         raise ValueError(f"The {-info}-th argument had an illegal value.")
     elif info > 0:
@@ -125,6 +131,23 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
                     )
 
         raise LinAlgError(msg)
+
+    if kernel not in _SCALE_INVARIANT:
+        # Check the condition number of `lhs` when the RBF is not scale
+        # invariant. Use the same warning criteria as `scipy.linalg.solve`. The
+        # condition number is not checked when the RBF is scale invariant
+        # because it is not always a good indicator of whether the solution is
+        # numerically stable. Likewise, the condition number can also be
+        # misleading when using a multiquadric RBF with a very large `epsilon`.
+        # In that case, a warning will be raised unnecessarily.
+        rcond, _ = dgecon(lu, lhs_norm, norm='1')
+        tol = dlamch('E')
+        if rcond < tol:
+            warnings.warn(
+                f"Ill-conditioned matrix (rcond={rcond:.6g}). The interpolant "
+                "may not be accurate.",
+                LinAlgWarning
+                )
 
     return shift, scale, coeffs
 

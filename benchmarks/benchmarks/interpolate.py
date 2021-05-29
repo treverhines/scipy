@@ -166,7 +166,7 @@ class RBFInterpolator(Benchmark):
             self.y,
             self.d,
             neighbors=neighbors,
-            epsilon=5.0,
+            epsilon=10.0,
             kernel=kernel
             )
         interp(self.x)
