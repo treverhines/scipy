@@ -126,6 +126,8 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
         Domain shift used to create the polynomial matrix.
     scale : (N,) float ndarray
         Domain scaling used to create the polynomial matrix.
+    kernel_scale : float
+        The scaling applied to the kernel matrix.
 
     """
     p = d.shape[0]
@@ -156,12 +158,21 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
     for i in range(p):
         lhs[i, i] += smoothing[i]
 
+    # Reduce the condition number of lhs by scaling the kernel matrix by its
+    # max absolute value (unless that is zero). The solved kernel coefficients
+    # must also be scaled by the same value.
+    kernel_scale = max(-np.min(lhs[:p, :p]), np.max(lhs[:p, :p]))
+    if kernel_scale == 0.0:
+        kernel_scale = 1.0
+
+    lhs[:p, :p] /= kernel_scale
+
     # Transpose to make the array fortran contiguous.
     rhs = np.empty((s, p + r), dtype=float).T
     rhs[:p] = d
     rhs[p:] = 0.0
 
-    return lhs, rhs, shift, scale
+    return lhs, rhs, shift, scale, kernel_scale
 
 
 # pythran export _evaluate(float[:, :],

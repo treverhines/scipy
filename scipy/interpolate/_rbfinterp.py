@@ -110,11 +110,10 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
         Domain scaling used to create the polynomial matrix.
 
     """
-    lhs, rhs, shift, scale = _build_system(
+    lhs, rhs, shift, scale, kernel_scale = _build_system(
         y, d, smoothing, kernel, epsilon, powers
         )
-
-    if (kernel not in _SCALE_INVARIANT) and check_cond:
+    if check_cond:
         lhs_norm = dlange('1', lhs)
 
     lu, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
@@ -135,14 +134,9 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
 
         raise LinAlgError(msg)
 
-    if (kernel not in _SCALE_INVARIANT) and check_cond:
-        # Check the condition number of `lhs` when the RBF is not scale
-        # invariant. Use the same warning criteria as `scipy.linalg.solve`. The
-        # condition number is not checked when the RBF is scale invariant
-        # because it is not always a good indicator of whether the solution is
-        # numerically stable. Likewise, the condition number can also be
-        # misleading when using a multiquadric RBF with a very large `epsilon`.
-        # In that case, a warning will be raised unnecessarily.
+    if check_cond:
+        # Check the condition number of `lhs` using the same warning criteria
+        # as `scipy.linalg.solve`.
         rcond, _ = dgecon(lu, lhs_norm, norm='1')
         tol = dlamch('E')
         if rcond < tol:
@@ -151,6 +145,10 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
                 "may not be accurate.",
                 LinAlgWarning
                 )
+
+    # The kernel matrix in `lhs` was scaled by `kernel_scale`, so the kernel
+    # coefficients need to also be scaled.
+    coeffs[:y.shape[0]] /= kernel_scale
 
     return shift, scale, coeffs
 
