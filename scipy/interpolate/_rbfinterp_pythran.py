@@ -68,6 +68,18 @@ def kernel_matrix(x, kernel_func, out):
             out[j, i] = out[i, j]
 
 
+def symm_maxabs(x):
+    """Returns the maximum absolute value of a symmetrix matrix."""
+    out = 0.0
+    for i in range(x.shape[0]):
+        for j in range(i+1):
+            value = abs(x[i, j])
+            if value > out:
+                out = value
+
+    return out
+
+
 def polynomial_matrix(x, powers, out):
     """Evaluate monomials, with exponents from `powers`, at `x`."""
     for i in range(x.shape[0]):
@@ -126,8 +138,9 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
         Domain shift used to create the polynomial matrix.
     scale : (N,) float ndarray
         Domain scaling used to create the polynomial matrix.
-    kernel_scale : float
-        The scaling applied to the kernel matrix.
+    poly_scale : float
+        Scaling applied to the polynomial matrix so that it matches the scale
+        of the kernel matrx.
 
     """
     p = d.shape[0]
@@ -152,27 +165,28 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
     # dgesv to not make a copy of lhs.
     lhs = np.empty((p + r, p + r), dtype=float).T
     kernel_matrix(yeps, kernel_func, lhs[:p, :p])
-    polynomial_matrix(yhat, powers, lhs[:p, p:])
-    lhs[p:, :p] = lhs[:p, p:].T
-    lhs[p:, p:] = 0.0
     for i in range(p):
         lhs[i, i] += smoothing[i]
 
-    # Reduce the condition number of lhs by scaling the kernel matrix by its
-    # max absolute value (unless that is zero). The solved kernel coefficients
+    polynomial_matrix(yhat, powers, lhs[:p, p:])
+    # Reduce the condition number of lhs by scaling the polynomial matrix to
+    # match the scale of the kernel matrix. The solved polynomial coefficients
     # must also be scaled by the same value.
-    kernel_scale = max(-np.min(lhs[:p, :p]), np.max(lhs[:p, :p]))
-    if kernel_scale == 0.0:
-        kernel_scale = 1.0
+    poly_scale = symm_maxabs(lhs[:p, :p])
+    if poly_scale == 0.0:
+        poly_scale = 1.0
 
-    lhs[:p, :p] /= kernel_scale
+    lhs[:p, p:] *= poly_scale
+    lhs[p:, :p] = lhs[:p, p:].T
+    lhs[p:, p:] = 0.0
+
 
     # Transpose to make the array fortran contiguous.
     rhs = np.empty((s, p + r), dtype=float).T
     rhs[:p] = d
     rhs[p:] = 0.0
 
-    return lhs, rhs, shift, scale, kernel_scale
+    return lhs, rhs, shift, scale, poly_scale
 
 
 # pythran export _evaluate(float[:, :],

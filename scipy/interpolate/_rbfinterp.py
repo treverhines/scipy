@@ -110,7 +110,7 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
         Domain scaling used to create the polynomial matrix.
 
     """
-    lhs, rhs, shift, scale, kernel_scale = _build_system(
+    lhs, rhs, shift, scale, poly_scale = _build_system(
         y, d, smoothing, kernel, epsilon, powers
         )
     if check_cond:
@@ -146,9 +146,9 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
                 LinAlgWarning
                 )
 
-    # The kernel matrix in `lhs` was scaled by `kernel_scale`, so the kernel
-    # coefficients need to also be scaled.
-    coeffs[:y.shape[0]] /= kernel_scale
+    # The polynomial matrices in `lhs` were scaled by `poly_scale`, so the
+    # polynomial coefficients need to also be scaled.
+    coeffs[y.shape[0]:] *= poly_scale
 
     return shift, scale, coeffs
 
@@ -204,9 +204,7 @@ class RBFInterpolator:
     check_cond : bool, optional
         Whether to check the condition number of the system used to solve for
         the RBF interpolation coefficients. A warning is raised if the system
-        is ill-conditioned. The check only occurs when `kernel` is not scale
-        invariant ('multiqaudric', 'inverse_multiquadric', 'inverse_quadratic',
-        or 'gaussian'). Defaults to `True`.
+        is ill-conditioned. Defaults to `True`.
 
         .. versionadded:: 1.8.0
 
