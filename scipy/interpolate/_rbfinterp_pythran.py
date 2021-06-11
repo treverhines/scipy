@@ -180,7 +180,6 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
     lhs[p:, :p] = lhs[:p, p:].T
     lhs[p:, p:] = 0.0
 
-
     # Transpose to make the array fortran contiguous.
     rhs = np.empty((s, p + r), dtype=float).T
     rhs[:p] = d
