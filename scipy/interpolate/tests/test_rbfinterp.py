@@ -5,6 +5,7 @@ from numpy.linalg import LinAlgError
 from numpy.testing import assert_allclose, assert_array_equal
 from scipy.stats.qmc import Halton
 from scipy.spatial import cKDTree
+from scipy.linalg.misc import LinAlgWarning
 from scipy.interpolate._rbfinterp import (
     _AVAILABLE, _SCALE_INVARIANT, _NAME_TO_MIN_DEGREE, _monomial_powers,
     RBFInterpolator
@@ -340,6 +341,28 @@ class _TestRBFInterpolator:
             match = f'`degree` should not be below {deg}'
             with pytest.warns(Warning, match=match):
                 self.build(y, d, epsilon=1.0, kernel=kernel, degree=deg-1)
+
+    def test_ill_conditioned_warning(self):
+        # Test if a warning is raised for an ill-conditioned matrix. There may
+        # be slight differences between platforms that cause a LinAlgError to
+        # be raised instead, which would cause this test to fail.
+        y = np.linspace(0, 1, 5)[:, None]
+        d = np.zeros(5)
+        match = 'Ill-conditioned matrix'
+        with pytest.warns(LinAlgWarning, match=match):
+            self.build(
+                y, d,
+                kernel='gaussian',
+                epsilon=0.01,
+                check_cond=True)(y)
+
+    def test_no_ill_conditioned_warning(self):
+        # Test if setting `check_cond` to `False` suppresses the
+        # ill-conditioned matrix warning. Again, platform differences could
+        # cause this test to fail.
+        y = np.linspace(0, 1, 5)[:, None]
+        d = np.zeros(5)
+        self.build(y, d, kernel='gaussian', epsilon=0.01, check_cond=False)(y)
 
     def test_rank_error(self):
         # An error should be raised when `kernel` is "thin_plate_spline" and
