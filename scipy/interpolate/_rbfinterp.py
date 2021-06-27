@@ -120,10 +120,7 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
     if info < 0:
         raise ValueError(f"The {-info}-th argument had an illegal value.")
     elif info > 0:
-        msg = (
-            "Singular matrix. The shape parameter may be too small, or some "
-            "data point locations may be too close together."
-            )
+        msg = "Singular matrix."
         nmonos = powers.shape[0]
         if nmonos > 0:
             pmat = _polynomial_matrix((y - shift)/scale, powers)
@@ -144,10 +141,8 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers,
         tol = dlamch('E')
         if rcond < tol:
             warnings.warn(
-                f"Ill-conditioned matrix (rcond={rcond:.6g}). The shape "
-                "parameter may be too small, some data point locations may be "
-                "too close together, or the matrix of monomials may be close "
-                "to not having full column rank.",
+                f"Ill-conditioned matrix (rcond={rcond:.6g}). The interpolant "
+                "may not be accurate.",
                 LinAlgWarning
                 )
 
