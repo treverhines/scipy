@@ -68,18 +68,6 @@ def kernel_matrix(x, kernel_func, out):
             out[j, i] = out[i, j]
 
 
-def symm_maxabs(x):
-    """Returns the maximum absolute value of a symmetrix matrix."""
-    out = 0.0
-    for i in range(x.shape[0]):
-        for j in range(i+1):
-            value = abs(x[i, j])
-            if value > out:
-                out = value
-
-    return out
-
-
 def polynomial_matrix(x, powers, out):
     """Evaluate monomials, with exponents from `powers`, at `x`."""
     for i in range(x.shape[0]):
@@ -101,6 +89,18 @@ def _polynomial_matrix(x, powers):
     """Return monomials, with exponents from `powers`, evaluated at `x`."""
     out = np.empty((x.shape[0], powers.shape[0]), dtype=float)
     polynomial_matrix(x, powers, out)
+    return out
+
+
+def symm_maxabs(x):
+    """Returns the maximum absolute value of a symmetric matrix."""
+    out = 0.0
+    for i in range(x.shape[0]):
+        for j in range(i+1):
+            value = abs(x[i, j])
+            if value > out:
+                out = value
+
     return out
 
 
