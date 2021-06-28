@@ -140,7 +140,7 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
         Domain scaling used to create the polynomial matrix.
     poly_scale : float
         Scaling applied to the polynomial matrix so that it matches the scale
-        of the kernel matrx.
+        of the kernel matrix.
 
     """
     p = d.shape[0]
