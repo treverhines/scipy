@@ -97,9 +97,7 @@ def symm_maxabs(x):
     out = 0.0
     for i in range(x.shape[0]):
         for j in range(i+1):
-            value = abs(x[i, j])
-            if value > out:
-                out = value
+            out = max(abs(x[i, j]), out)
 
     return out
 
