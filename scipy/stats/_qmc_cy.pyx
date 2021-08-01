@@ -358,11 +358,13 @@ def _cy_van_der_corput_scrambled(long n, long base, long start_index,
     for i in range(n):
         quotient = start_index + i
         b2r = 1.0 / base
-        for j in range(permutations.shape[0]):
+        j = 0
+        while (1 - b2r) < 1:
             remainder = quotient % base
             remainder = permutations[j, remainder]
             sequence_view[i] += remainder * b2r
             b2r /= base
             quotient //= base
+            j += 1
 
     return sequence
