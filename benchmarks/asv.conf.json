@@ -40,7 +40,7 @@
         "numpy": [],
         "Cython": ["0.29.21"],
         "pytest": [],
-        "pythran": [],
+        "pip+pythran": [],
         "pybind11": [],
     },
 
