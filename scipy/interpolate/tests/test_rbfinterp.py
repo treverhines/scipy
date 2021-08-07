@@ -350,14 +350,53 @@ class _TestRBFInterpolator:
         with pytest.raises(LinAlgError, match=match):
             self.build(y, d, kernel='thin_plate_spline')(y)
 
-    def test_single_point(self):
-        # Make sure interpolation still works with only one point (in 1, 2, and
-        # 3 dimensions).
-        for dim in [1, 2, 3]:
-            y = np.zeros((1, dim))
-            d = np.ones((1,))
-            f = self.build(y, d, kernel='linear')(y)
-            assert_allclose(d, f)
+    @pytest.mark.parametrize('dim', [1, 2, 3])
+    def test_single_data_point(self, dim):
+        seq = Halton(dim, scramble=False, seed=np.random.RandomState())
+        y = seq.random(1)
+        d = np.ones(1)
+        x = seq.random(5)
+        f = self.build(y, d, kernel='linear')(x)
+        assert_allclose(f, np.ones(5))
+
+    @pytest.mark.parametrize('dim', [1, 2, 3])
+    def test_single_evaluation_point(self, dim):
+        seq = Halton(dim, scramble=False, seed=np.random.RandomState())
+        y = seq.random(5)
+        d = np.ones(5)
+        x = seq.random(1)
+        f = self.build(y, d)(x)
+        assert_allclose(f, np.ones(1))
+
+    @pytest.mark.parametrize('dim', [1, 2, 3])
+    def test_zero_data_points(self, dim):
+        # Interpolation with zero data points should be possible with positive
+        # definite kernels and no polynomial terms. The resulting interpolant
+        # should be a constant zero.
+        seq = Halton(dim, scramble=False, seed=np.random.RandomState())
+        y = seq.random(0)
+        d = np.ones(0)
+        x = seq.random(5)
+        f = self.build(y, d, kernel='gaussian', epsilon=1.0, degree=-1)(x)
+        assert_array_equal(f, np.zeros(5))
+
+    @pytest.mark.parametrize('dim', [1, 2, 3])
+    def test_zero_evaluation_points(self, dim):
+        seq = Halton(dim, scramble=False, seed=np.random.RandomState())
+        y = seq.random(5)
+        d = np.ones(5)
+        x = seq.random(0)
+        f = self.build(y, d)(x)
+        assert_array_equal(f, np.zeros(0))
+
+    @pytest.mark.parametrize('dim', [1, 2, 3])
+    def test_zero_dimensional_data_values(self, dim):
+        seq = Halton(dim, scramble=False, seed=np.random.RandomState())
+        y = seq.random(5)
+        d = np.ones((5, 0))
+        x = seq.random(5)
+        f = self.build(y, d)(x)
+        assert_array_equal(f, np.zeros((5, 0)))
 
     def test_pickleable(self):
         # Make sure we can pickle and unpickle the interpolant without any

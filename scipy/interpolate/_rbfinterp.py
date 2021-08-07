@@ -7,6 +7,7 @@ from numpy.linalg import LinAlgError
 from scipy.spatial import KDTree
 from scipy.special import comb
 from scipy.linalg.lapack import dgesv  # type: ignore[attr-defined]
+from scipy._lib._util import prod
 
 from ._rbfinterp_pythran import _build_system, _evaluate, _polynomial_matrix
 
@@ -108,7 +109,17 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
     lhs, rhs, shift, scale = _build_system(
         y, d, smoothing, kernel, epsilon, powers
         )
-    _, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
+
+    if lhs.size != 0:
+        _, _, coeffs, info = dgesv(
+            lhs, rhs, overwrite_a=True, overwrite_b=True
+            )
+
+    else:
+        # `dgesv` will fail if `lhs` has shape (0, 0). In that case, we can use
+        # `rhs`, which has shape (0, S), as the solution.
+        coeffs, info = rhs, 0
+
     if info < 0:
         raise ValueError(f"The {-info}-th argument had an illegal value.")
     elif info > 0:
@@ -299,7 +310,7 @@ class RBFInterpolator:
                 )
 
         d_shape = d.shape[1:]
-        d = d.reshape((ny, -1))
+        d = d.reshape((ny, prod(d_shape)))
         # If `d` is complex, convert it to a float array with twice as many
         # columns. Otherwise, the LHS matrix would need to be converted to
         # complex and take up 2x more memory than necessary.
@@ -421,10 +432,14 @@ class RBFInterpolator:
         else:
             # Get the indices of the k nearest observation points to each
             # evaluation point.
-            _, yindices = self._tree.query(x, self.neighbors)
-            if self.neighbors == 1:
-                # `KDTree` squeezes the output when neighbors=1.
-                yindices = yindices[:, None]
+            if self.neighbors == 0:
+                # `KDTree` fails when requesting 0 neighbors.
+                yindices = np.zeros((nx, 0), dtype=int)
+            else:
+                _, yindices = self._tree.query(x, self.neighbors)
+                if self.neighbors == 1:
+                    # `KDTree` squeezes the output when requesting 1 neighbor.
+                    yindices = yindices[:, None]
 
             # Multiple evaluation points may have the same neighborhood of
             # observation points. Make the neighborhoods unique so that we only
