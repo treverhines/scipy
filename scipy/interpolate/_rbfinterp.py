@@ -90,8 +90,8 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
         Data values at `y`.
     smoothing : (P,) float ndarray
         Smoothing parameter for each data point.
-    kernel : str
-        Name of the RBF.
+    kernel : str or callable
+        Name of the RBF or a custom function.
     epsilon : float
         Shape parameter.
     powers : (R, N) int ndarray
@@ -107,9 +107,18 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers):
         Domain scaling used to create the polynomial matrix.
 
     """
-    lhs, rhs, shift, scale = _build_system(
-        y, d, smoothing, kernel, epsilon, powers
-        )
+    if callable(kernel):
+        lhs, rhs, shift, scale = _build_system(
+            y, d, smoothing, 'noop', epsilon, powers
+            )
+        ny = len(y)
+        lhs[:ny, :ny] = kernel(lhs[:ny, :ny])
+        lhs[range(ny), range(ny)] += smoothing
+    else:
+        lhs, rhs, shift, scale = _build_system(
+            y, d, smoothing, kernel, epsilon, powers
+            )
+
     _, _, coeffs, info = dgesv(lhs, rhs, overwrite_a=True, overwrite_b=True)
     if info < 0:
         raise ValueError(f"The {-info}-th argument had an illegal value.")
@@ -148,8 +157,8 @@ class RBFInterpolator:
         Smoothing parameter. The interpolant perfectly fits the data when this
         is set to 0. For large values, the interpolant approaches a least
         squares fit of a polynomial with the specified degree. Default is 0.
-    kernel : str, optional
-        Type of RBF. This should be one of
+    kernel : str or callable, optional
+        Type of RBF. This can be one of
 
             - 'linear'               : ``-r``
             - 'thin_plate_spline'    : ``r**2 * log(r)``
@@ -160,12 +169,19 @@ class RBFInterpolator:
             - 'inverse_quadratic'    : ``1/(1 + r**2)``
             - 'gaussian'             : ``exp(-r**2)``
 
+        Alternatively, this can be a callable that takes `r` as an input float
+        array and returns a float array with the same shape. Callables should
+        be positive definite or conditionally positive definite RBFs;
+        Otherwise, the interpolant may not be well-posed and the smoothing
+        parameter may have an an unintuitive effect.
+
         Default is 'thin_plate_spline'.
     epsilon : float, optional
         Shape parameter that scales the input to the RBF. If `kernel` is
         'linear', 'thin_plate_spline', 'cubic', or 'quintic', this defaults to
         1 and can be ignored because it has the same effect as scaling the
-        smoothing parameter. Otherwise, this must be specified.
+        smoothing parameter. This also defaults to 1 if `kernel` is a callable.
+        Otherwise, this must be specified.
     degree : int, optional
         Degree of the added polynomial. For some RBFs the interpolant may not
         be well-posed if the polynomial degree is too small. Those RBFs and
@@ -318,17 +334,20 @@ class RBFInterpolator:
                     f"({ny},)."
                     )
 
-        kernel = kernel.lower()
-        if kernel not in _AVAILABLE:
-            raise ValueError(f"`kernel` must be one of {_AVAILABLE}.")
+        if not callable(kernel):
+            kernel = kernel.lower()
+            if kernel not in _AVAILABLE:
+                raise ValueError(
+                    f"`kernel` must be one of {_AVAILABLE} or a callable."
+                    )
 
         if epsilon is None:
-            if kernel in _SCALE_INVARIANT:
+            if (kernel in _SCALE_INVARIANT) or callable(kernel):
                 epsilon = 1.0
             else:
                 raise ValueError(
                     "`epsilon` must be specified if `kernel` is not one of "
-                    f"{_SCALE_INVARIANT}."
+                    f"{_SCALE_INVARIANT} nor a callable."
                     )
         else:
             epsilon = float(epsilon)
@@ -433,9 +452,20 @@ class RBFInterpolator:
             nnei = self.neighbors
         # in each chunk we consume the same space we already occupy
         chunksize = memory_budget // ((self.powers.shape[0] + nnei)) + 1
-        if chunksize <= nx:
-            out = np.empty((nx, self.d.shape[1]), dtype=float)
-            for i in range(0, nx, chunksize):
+        out = np.empty((nx, self.d.shape[1]), dtype=float)
+        for i in range(0, nx, chunksize):
+            if callable(self.kernel):
+                vec = _build_evaluation_coefficients(
+                    x[i:i + chunksize, :],
+                    y,
+                    'noop',
+                    self.epsilon,
+                    self.powers,
+                    shift,
+                    scale)
+                vec[:, :nnei] = self.kernel(vec[:, :nnei])
+
+            else:
                 vec = _build_evaluation_coefficients(
                     x[i:i + chunksize, :],
                     y,
@@ -444,17 +474,9 @@ class RBFInterpolator:
                     self.powers,
                     shift,
                     scale)
-                out[i:i + chunksize, :] = np.dot(vec, coeffs)
-        else:
-            vec = _build_evaluation_coefficients(
-                x,
-                y,
-                self.kernel,
-                self.epsilon,
-                self.powers,
-                shift,
-                scale)
-            out = np.dot(vec, coeffs)
+
+            np.dot(vec, coeffs, out=out[i:i + chunksize])
+
         return out
 
     def __call__(self, x):

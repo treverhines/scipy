@@ -1,6 +1,11 @@
 import numpy as np
 
 
+def noop(r):
+    '''Do nothing so that a custom kernel can be applied outside of pythran'''
+    return r
+
+
 def linear(r):
     return -r
 
@@ -37,15 +42,16 @@ def gaussian(r):
 
 
 NAME_TO_FUNC = {
-   "linear": linear,
-   "thin_plate_spline": thin_plate_spline,
-   "cubic": cubic,
-   "quintic": quintic,
-   "multiquadric": multiquadric,
-   "inverse_multiquadric": inverse_multiquadric,
-   "inverse_quadratic": inverse_quadratic,
-   "gaussian": gaussian
-   }
+    "noop": noop,
+    "linear": linear,
+    "thin_plate_spline": thin_plate_spline,
+    "cubic": cubic,
+    "quintic": quintic,
+    "multiquadric": multiquadric,
+    "inverse_multiquadric": inverse_multiquadric,
+    "inverse_quadratic": inverse_quadratic,
+    "gaussian": gaussian
+    }
 
 
 def kernel_vector(x, y, kernel_func, out):
@@ -153,8 +159,11 @@ def _build_system(y, d, smoothing, kernel, epsilon, powers):
     polynomial_matrix(yhat, powers, lhs[:p, p:])
     lhs[p:, :p] = lhs[:p, p:].T
     lhs[p:, p:] = 0.0
-    for i in range(p):
-        lhs[i, i] += smoothing[i]
+    if kernel != 'noop':
+        # if kernel is 'noop' smoothing will be applied outside of pythran
+        # after the custom kernel has been applied.
+        for i in range(p):
+            lhs[i, i] += smoothing[i]
 
     # Transpose to make the array fortran contiguous.
     rhs = np.empty((s, p + r), dtype=float).T
