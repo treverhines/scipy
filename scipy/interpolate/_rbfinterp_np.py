@@ -1,7 +1,9 @@
+import warnings
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy._lib._ccallback_c import get_capsule_signature
 
+from scipy.linalg import LinAlgWarning
 from scipy.linalg.lapack import get_lapack_funcs
 from ._rbfinterp_common import _monomial_powers_impl
 
@@ -15,7 +17,9 @@ from ._rbfinterp_pythran import (
 
 
 dsysv = get_lapack_funcs('sysv', dtype=np.float64, ilp64="preferred")
-
+dsycon = get_lapack_funcs('sycon', dtype=np.float64, ilp64="preferred")
+dlange = get_lapack_funcs('lange', dtype=np.float64, ilp64="preferred")
+dlamch = get_lapack_funcs('lamch', dtype=np.float64, ilp64="preferred")
 
 def _get_kernel_capsule(kernel):
     """Return a float64(float64) capsule for given name.
@@ -120,7 +124,22 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers, xp):
     lhs, rhs, shift, scale = _build_system(
         y, d, smoothing, kernel, epsilon, powers, xp
         )
-    _, _, coeffs, info = dsysv(lhs, rhs, overwrite_a=True, overwrite_b=True)
+
+    p = y.shape[0]
+    kernel_ptp = np.ptp(lhs[:p, :p])
+    if kernel_ptp == 0.0:
+        kernel_ptp = 1.0
+
+    # Scale the polynomial matrices, which are in the range [-1, 1], to have
+    # the same scale as the kernel matrix.
+    lhs[p:, :p] *= kernel_ptp
+    lhs[:p, p:] *= kernel_ptp
+
+    lhs_norm = dlange('1', lhs)
+    lu, ipvt, coeffs, info = dsysv(lhs, rhs, overwrite_a=True, overwrite_b=True)
+    # Remove the above scaling from the polynomial coefficients
+    coeffs[p:] *= kernel_ptp
+
     if info < 0:
         raise ValueError(f"The {-info}-th argument had an illegal value.")
     elif info > 0:
@@ -137,6 +156,10 @@ def _build_and_solve_system(y, d, smoothing, kernel, epsilon, powers, xp):
                     )
 
         raise LinAlgError(msg)
+
+    rcond, _ = dsycon(lu, ipvt, lhs_norm)
+    if rcond < dlamch('E'):
+        warnings.warn('Ill-conditioned matrix (rcond=%g).' % rcond, LinAlgWarning)
 
     return shift, scale, coeffs
 
